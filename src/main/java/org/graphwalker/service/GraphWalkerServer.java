@@ -31,13 +31,18 @@ import com.beust.jcommander.ParameterException;
 import org.graphwalker.core.event.EventType;
 import org.graphwalker.core.event.Observable;
 import org.graphwalker.core.event.Observer;
+import org.graphwalker.core.machine.Context;
 import org.graphwalker.core.machine.Machine;
 import org.graphwalker.core.machine.SimpleMachine;
+import org.graphwalker.core.model.Element;
 import org.graphwalker.core.utils.LoggerUtil;
+import org.graphwalker.io.factory.json.JsonContextFactory;
 import org.java_websocket.WebSocket;
 import org.java_websocket.WebSocketImpl;
 import org.java_websocket.handshake.ClientHandshake;
 import org.java_websocket.server.WebSocketServer;
+import org.json.JSONException;
+import org.json.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -57,11 +62,13 @@ public class GraphWalkerServer extends WebSocketServer implements Observer {
 
     private Set<WebSocket> conns;
     private Map<WebSocket, Machine> machines;
+    private Map<WebSocket, List<Context>>  contexts;
 
     public GraphWalkerServer(int port) throws UnknownHostException {
         super(new InetSocketAddress(port));
         conns = new HashSet<>();
         machines = new HashMap<>();
+        contexts = new HashMap<>();
     }
 
     public GraphWalkerServer(InetSocketAddress address) {
@@ -73,7 +80,8 @@ public class GraphWalkerServer extends WebSocketServer implements Observer {
     @Override
     public void onOpen(WebSocket conn, ClientHandshake handshake) {
         conns.add(conn);
-        machines.put(conn, new SimpleMachine());
+        machines.put(conn, null);
+        contexts.put(conn, new ArrayList<Context>());
         logger.info(conn.getRemoteSocketAddress().getAddress().getHostAddress() + " is now connected");
     }
 
@@ -87,12 +95,95 @@ public class GraphWalkerServer extends WebSocketServer implements Observer {
     @Override
     public void onMessage(WebSocket conn, String message) {
         logger.info(conn.getRemoteSocketAddress().getAddress().getHostAddress() + " sent msg: " + message);
+        int i = message.indexOf(' ');
+        String command = null;
+        String restOfString = null;
+        if (i > 0) {
+            command = message.substring(0, i);
+            restOfString = message.substring(i);
+        } else {
+            command = message;
+            restOfString = "";
+        }
+
+        JSONObject jsonObject = new JSONObject();
+        if (command.equalsIgnoreCase("loadModel")) {
+            try {
+                Context context = new JsonContextFactory().create(restOfString);
+                List<Context> executionContexts = contexts.get(conn);
+                executionContexts.add(context);
+                jsonObject.put("message", "ok");
+                jsonObject.put("response", 0);
+            } catch (JSONException e) {
+                jsonObject.put("message", "Could not parse the model: \" + e.getMessage()");
+                jsonObject.put("response", 1);
+            }
+
+        } else if (command.equalsIgnoreCase("start")) {
+            List<Context> executionContexts = contexts.get(conn);
+            Machine machine = new SimpleMachine(executionContexts);
+            machine.addObserver(this);
+            machines.put(conn, machine);
+            jsonObject.put("message", "ok");
+            jsonObject.put("response", 0);
+
+        } else if (command.equalsIgnoreCase("getNext")) {
+            Machine machine = machines.get(conn);
+            if (machine!=null) {
+                machine.getNextStep();
+                jsonObject.put("message", "ok");
+                jsonObject.put("response", 0);
+            } else {
+                jsonObject.put("message", "The GraphWalker state machine is not initiated. Is a model loaded, and started?");
+                jsonObject.put("response", 1);
+            }
+
+        } else if (command.equalsIgnoreCase("hasNext")) {
+            Machine machine = machines.get(conn);
+            if (machine == null) {
+                jsonObject.put("message", "The GraphWalker state machine is not initiated. Is a model loaded, and started?");
+                jsonObject.put("response", 1);
+            } else if (machine.hasNextStep()) {
+                jsonObject.put("hasNext", true);
+                jsonObject.put("response", 0);
+            } else {
+                jsonObject.put("hasNext", false);
+                jsonObject.put("response", 0);
+            }
+        } else {
+            jsonObject.put("message", "Unknown command");
+            jsonObject.put("response", 1);
+        }
+        conn.send(jsonObject.toString());
     }
 
-    public void onLoad(WebSocket conn, String modelsData) {
-        logger.info(conn.getRemoteSocketAddress().getAddress().getHostAddress() + " modelData: " + modelsData);
+    @Override
+    public void onError(WebSocket conn, Exception ex) {
+        ex.printStackTrace();
+        if (conn != null) {
+            // some errors like port binding failed may not be assignable to a specific websocket
+        }
     }
 
+    @Override
+    public void update(Observable observable, Object object, EventType type) {
+        logger.info("Received an update from a GraphWalker machine");
+        Iterator it = machines.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry pairs = (Map.Entry)it.next();
+            if (observable == pairs.getValue()) {
+                logger.info("Event: " + type);
+                Machine machine = (Machine) pairs.getValue();
+                WebSocket conn = (WebSocket) pairs.getKey();
+                if (type == EventType.AFTER_ELEMENT) {
+                    JSONObject jsonObject = new JSONObject();
+                    jsonObject.put("id", ((Element)object).getId());
+                    jsonObject.put("visited", machine.getProfiler().getVisitCount((Element)object));
+                    conn.send(jsonObject.toString());
+                }
+            }
+        }
+    }
 
     public static void main(String[] args) throws InterruptedException, IOException {
         options = new Options();
@@ -141,34 +232,6 @@ public class GraphWalkerServer extends WebSocketServer implements Observer {
                 break;
             }
         }
-    }
-
-    @Override
-    public void onError(WebSocket conn, Exception ex) {
-        ex.printStackTrace();
-        if (conn != null) {
-            // some errors like port binding failed may not be assignable to a specific websocket
-        }
-    }
-
-    /**
-     * Sends <var>text</var> to all currently connected WebSocket clients.
-     *
-     * @param text The String to send across the network.
-     * @throws InterruptedException When socket related I/O errors occur.
-     */
-    public void sendToAll(String text) {
-        Collection<WebSocket> con = connections();
-        synchronized (con) {
-            for (WebSocket c : con) {
-                c.send(text);
-            }
-        }
-    }
-
-    @Override
-    public void update(Observable observable, Object object, EventType type) {
-
     }
 
     private static void setLogLevel(Options options) {
