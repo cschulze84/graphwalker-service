@@ -41,6 +41,7 @@ import org.java_websocket.WebSocket;
 import org.java_websocket.WebSocketImpl;
 import org.java_websocket.handshake.ClientHandshake;
 import org.java_websocket.server.WebSocketServer;
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.slf4j.Logger;
@@ -95,66 +96,92 @@ public class GraphWalkerServer extends WebSocketServer implements Observer {
     @Override
     public void onMessage(WebSocket conn, String message) {
         logger.info(conn.getRemoteSocketAddress().getAddress().getHostAddress() + " sent msg: " + message);
-        int i = message.indexOf(' ');
-        String command = null;
-        String restOfString = null;
-        if (i > 0) {
-            command = message.substring(0, i);
-            restOfString = message.substring(i);
-        } else {
-            command = message;
-            restOfString = "";
+        JSONObject response = new JSONObject();
+        JSONObject root = null;
+        try {
+            root  = new JSONObject(message);
+        } catch (JSONException e) {
+            response.put("message", "Unknown command: " + e.getMessage());
+            response.put("success", false);
+            conn.send(response.toString());
+            return;
         }
 
-        JSONObject jsonObject = new JSONObject();
-        if (command.equalsIgnoreCase("loadModel")) {
+        String type = root.getString("type").toUpperCase();
+        if (type.equals("LOADMODEL")) {
+            response.put("type", "loadModel");
             try {
-                Context context = new JsonContextFactory().create(restOfString);
+                Context context = new JsonContextFactory().create(root.getJSONObject("model").toString());
                 List<Context> executionContexts = contexts.get(conn);
                 executionContexts.add(context);
-                jsonObject.put("message", "ok");
-                jsonObject.put("response", 0);
+                response.put("success", true);
             } catch (JSONException e) {
-                jsonObject.put("message", "Could not parse the model: \" + e.getMessage()");
-                jsonObject.put("response", 1);
+                response.put("success", false);
+                response.put("message", "Could not parse the model: " + e.getMessage());
             }
 
-        } else if (command.equalsIgnoreCase("start")) {
+        } else if (type.equals("START")) {
             List<Context> executionContexts = contexts.get(conn);
             Machine machine = new SimpleMachine(executionContexts);
             machine.addObserver(this);
             machines.put(conn, machine);
-            jsonObject.put("message", "ok");
-            jsonObject.put("response", 0);
+            response.put("type", "start");
+            response.put("success", true);
 
-        } else if (command.equalsIgnoreCase("getNext")) {
+        } else if (type.equals("GETNEXT")) {
             Machine machine = machines.get(conn);
+            response.put("type", "getNext");
             if (machine!=null) {
                 machine.getNextStep();
-                jsonObject.put("message", "ok");
-                jsonObject.put("response", 0);
+                response.put("success", true);
             } else {
-                jsonObject.put("message", "The GraphWalker state machine is not initiated. Is a model loaded, and started?");
-                jsonObject.put("response", 1);
+                response.put("success", false);
+                response.put("message", "The GraphWalker state machine is not initiated. Is a model loaded, and started?");
             }
 
-        } else if (command.equalsIgnoreCase("hasNext")) {
+        } else if (type.equals("HASNEXT")) {
             Machine machine = machines.get(conn);
+            response.put("type", "hasNext");
             if (machine == null) {
-                jsonObject.put("message", "The GraphWalker state machine is not initiated. Is a model loaded, and started?");
-                jsonObject.put("response", 1);
+                response.put("success", false);
+                response.put("message", "The GraphWalker state machine is not initiated. Is a model loaded, and started?");
             } else if (machine.hasNextStep()) {
-                jsonObject.put("hasNext", true);
-                jsonObject.put("response", 0);
+                response.put("success", true);
+                response.put("hasNext", true);
             } else {
-                jsonObject.put("hasNext", false);
-                jsonObject.put("response", 0);
+                response.put("success", true);
+                response.put("hasNext", false);
             }
+
+        } else if (type.equals("RESTART")) {
+            machines.put(conn,null);
+            contexts.put(conn, null);
+            contexts.put(conn, new ArrayList<Context>());
+            response.put("type", "restart");
+            response.put("success", true);
+
+        } else if (type.equals("GETDATA")) {
+            response.put("type", "getData");
+            Machine machine = machines.get(conn);
+            if (machine!=null) {
+                JSONArray jsonKeys = new JSONArray();
+                for (Map.Entry<String, String> key : machine.getCurrentContext().getKeys().entrySet()) {
+                    JSONObject jsonKey = new JSONObject();
+                    jsonKey.put(key.getKey(), key.getValue());
+                    jsonKeys.put(jsonKey);
+                }
+                response.put("data", jsonKeys);
+                response.put("success", true);
+            } else {
+                response.put("success", false);
+                response.put("message", "The GraphWalker state machine is not initiated. Is a model loaded, and started?");
+            }
+
         } else {
-            jsonObject.put("message", "Unknown command");
-            jsonObject.put("response", 1);
+            response.put("message", "Unknown command");
+            response.put("success", false);
         }
-        conn.send(jsonObject.toString());
+        conn.send(response.toString());
     }
 
     @Override
@@ -177,8 +204,9 @@ public class GraphWalkerServer extends WebSocketServer implements Observer {
                 WebSocket conn = (WebSocket) pairs.getKey();
                 if (type == EventType.AFTER_ELEMENT) {
                     JSONObject jsonObject = new JSONObject();
+                    jsonObject.put("type", "visitedElement");
                     jsonObject.put("id", ((Element)object).getId());
-                    jsonObject.put("visited", machine.getProfiler().getVisitCount((Element)object));
+                    jsonObject.put("visitedCount", machine.getProfiler().getVisitCount((Element)object));
                     conn.send(jsonObject.toString());
                 }
             }

@@ -119,7 +119,7 @@ Server response
 ~~~json
 {
     "type": "hasNext",
-    "response": boolean,
+    "hasNext": boolean,
     "success": boolean,
     "msg": "If success is false, a message will returned"
 }
