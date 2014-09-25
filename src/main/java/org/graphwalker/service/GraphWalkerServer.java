@@ -29,7 +29,6 @@ package org.graphwalker.service;
 import com.beust.jcommander.JCommander;
 import com.beust.jcommander.ParameterException;
 import org.graphwalker.core.event.EventType;
-import org.graphwalker.core.event.Observable;
 import org.graphwalker.core.event.Observer;
 import org.graphwalker.core.machine.Context;
 import org.graphwalker.core.machine.Machine;
@@ -193,20 +192,19 @@ public class GraphWalkerServer extends WebSocketServer implements Observer {
     }
 
     @Override
-    public void update(Observable observable, Object object, EventType type) {
+    public void update(Machine machine, Element element, EventType type) {
         logger.info("Received an update from a GraphWalker machine");
         Iterator it = machines.entrySet().iterator();
         while (it.hasNext()) {
             Map.Entry pairs = (Map.Entry)it.next();
-            if (observable == pairs.getValue()) {
+            if (machine == pairs.getValue()) {
                 logger.info("Event: " + type);
-                Machine machine = (Machine) pairs.getValue();
                 WebSocket conn = (WebSocket) pairs.getKey();
                 if (type == EventType.AFTER_ELEMENT) {
                     JSONObject jsonObject = new JSONObject();
                     jsonObject.put("type", "visitedElement");
-                    jsonObject.put("id", ((Element)object).getId());
-                    jsonObject.put("visitedCount", machine.getProfiler().getVisitCount((Element)object));
+                    jsonObject.put("id", element.getId());
+                    jsonObject.put("visitedCount", machine.getProfiler().getVisitCount(element));
                     conn.send(jsonObject.toString());
                 }
             }
